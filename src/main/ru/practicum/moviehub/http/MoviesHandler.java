@@ -14,7 +14,11 @@ import java.util.Optional;
 import java.nio.charset.StandardCharsets;
 
 class MoviesHandler extends BaseHttpHandler {
+
     private static final int MIN_YEAR = 1888;
+    private static final String MOVIES_PATH = "/movies";
+    private static final String MOVIES_PREFIX = "/movies/";
+
     private final MoviesStore store;
 
     public MoviesHandler(MoviesStore store) {
@@ -23,34 +27,38 @@ class MoviesHandler extends BaseHttpHandler {
 
     @Override
     public void handle(HttpExchange ex) throws IOException {
-        String method = ex.getRequestMethod();
-        String path = ex.getRequestURI().getPath();
-        String query = ex.getRequestURI().getQuery();
-
         try {
-            if (path.equals("/movies")) {
-                if (method.equalsIgnoreCase("GET")) {
-                    handleGetAll(ex, query);
-                } else if (method.equalsIgnoreCase("POST")) {
-                    handlePost(ex);
-                } else {
-                    sendError(ex, 405, "Такого метода нету");
-                }
-            } else if (path.startsWith("/movies/")) {
-                String idPart = path.substring("/movies/".length());
-                if (method.equalsIgnoreCase("GET")) {
-                    handleGetById(ex, idPart);
-                } else if (method.equalsIgnoreCase("DELETE")) {
-                    handleDelete(ex, idPart);
-                } else {
-                    sendError(ex, 405, "Такого метода нету");
-                }
+            String method = ex.getRequestMethod();
+
+            if (method.equalsIgnoreCase("GET")) {
+                handleGet(ex);
+            } else if (method.equalsIgnoreCase("POST")) {
+                handlePost(ex);
+            } else if (method.equalsIgnoreCase("DELETE")) {
+                handleDelete(ex);
             } else {
-                sendError(ex, 404, "Не найдено");
+                sendError(ex, 405, "Такого метода нету");
             }
         } catch (Exception e) {
             sendError(ex, 500, "Внутренняя ошибка сервера");
         }
+    }
+
+    private void handleGet(HttpExchange ex) throws IOException {
+        String path = ex.getRequestURI().getPath();
+        String query = ex.getRequestURI().getQuery();
+
+        if (path.equals(MOVIES_PATH)) {
+            handleGetAll(ex, query);
+            return;
+        }
+
+        if (path.startsWith(MOVIES_PREFIX)) {
+            handleGetById(ex, extractId(path));
+            return;
+        }
+
+        sendError(ex, 404, "Не найдено");
     }
 
     private void handleGetAll(HttpExchange ex, String query) throws IOException {
@@ -68,7 +76,35 @@ class MoviesHandler extends BaseHttpHandler {
         sendJson(ex, 200, gson.toJson(store.getAll()));
     }
 
+    private void handleGetById(HttpExchange ex, String idPart) throws IOException {
+        int id;
+        try {
+            id = Integer.parseInt(idPart);
+        } catch (NumberFormatException e) {
+            sendError(ex, 400, "Некорректный ID");
+            return;
+        }
+
+        Optional<Movie> movie = store.getById(id);
+        if (movie.isEmpty()) {
+            sendError(ex, 404, "Фильм не найден");
+            return;
+        }
+        sendJson(ex, 200, gson.toJson(movie.get()));
+    }
+
     private void handlePost(HttpExchange ex) throws IOException {
+        String path = ex.getRequestURI().getPath();
+
+        if (!path.equals(MOVIES_PATH)) {
+            sendError(ex, 404, "Не найдено");
+            return;
+        }
+
+        handleCreateMovie(ex);
+    }
+
+    private void handleCreateMovie(HttpExchange ex) throws IOException {
         String contentType = ex.getRequestHeaders().getFirst("Content-Type");
         if (contentType == null || !contentType.toLowerCase().startsWith("application/json")) {
             sendError(ex, 415, "Такого метода нету");
@@ -89,7 +125,19 @@ class MoviesHandler extends BaseHttpHandler {
             return;
         }
 
+        List<String> details = validate(input);
+        if (!details.isEmpty()) {
+            sendError(ex, 422, "Ошибка валидации", details);
+            return;
+        }
+
+        Movie saved = store.add(input);
+        sendJson(ex, 201, gson.toJson(saved));
+    }
+
+    private List<String> validate(Movie input) {
         List<String> details = new ArrayList<>();
+
         if (input.getTitle() == null || input.getTitle().isBlank()) {
             details.add("название не должно быть пустым");
         } else if (input.getTitle().length() > 100) {
@@ -101,33 +149,21 @@ class MoviesHandler extends BaseHttpHandler {
             details.add("год должен быть между " + MIN_YEAR + " и " + (currentYear + 1));
         }
 
-        if (!details.isEmpty()) {
-            sendError(ex, 422, "Ошибка валидации", details);
-            return;
-        }
-
-        Movie saved = store.add(input);
-        sendJson(ex, 201, gson.toJson(saved));
+        return details;
     }
 
-    private void handleGetById(HttpExchange ex, String idPart) throws IOException {
-        int id;
-        try {
-            id = Integer.parseInt(idPart);
-        } catch (NumberFormatException e) {
-            sendError(ex, 400, "Некорректный ID");
+    private void handleDelete(HttpExchange ex) throws IOException {
+        String path = ex.getRequestURI().getPath();
+
+        if (!path.startsWith(MOVIES_PREFIX)) {
+            sendError(ex, 404, "Не найдено");
             return;
         }
 
-        Optional<Movie> movie = store.getById(id);
-        if (movie.isEmpty()) {
-            sendError(ex, 404, "Фильм не найден");
-            return;
-        }
-        sendJson(ex, 200, gson.toJson(movie.get()));
+        handleDeleteById(ex, extractId(path));
     }
 
-    private void handleDelete(HttpExchange ex, String idPart) throws IOException {
+    private void handleDeleteById(HttpExchange ex, String idPart) throws IOException {
         int id;
         try {
             id = Integer.parseInt(idPart);
@@ -141,6 +177,10 @@ class MoviesHandler extends BaseHttpHandler {
             return;
         }
         sendNoContent(ex);
+    }
+
+    private String extractId(String path) {
+        return path.substring(MOVIES_PREFIX.length());
     }
 
     private String readBody(HttpExchange ex) throws IOException {
